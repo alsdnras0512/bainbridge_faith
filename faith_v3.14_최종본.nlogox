@@ -1,0 +1,2102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<model version="NetLogo 7.0.3" snapToGrid="false">
+  <code><![CDATA[;;; ============================================================
+;;; Cyburg Faith Simulation - v10 (wealth class 제거)
+;;; Based on William S. Bainbridge, "God from the Machine" Ch. 7
+;;;
+;;; v9 → v10 변경:
+;;;   - wealth class (upper/middle/lower) 관련 코드 모두 제거
+;;;     (정렬 연산이 매 틱마다 발생해 성능 저하)
+;;;   - mean-faith-upper/middle/lower-class 글로벌 제거
+;;;   - mean-wealth-upper/lower-cut 글로벌 제거
+;;;   - lower/middle/upper-class-cutoff, *-class-agents reporter 제거
+;;;   - wealth-list reporter 제거
+;;;
+;;; v9 변경 (유지):
+;;;   - 직업군별 사망 시점 누적 신앙도 측정
+;;;
+;;; v8 변경 (유지):
+;;;   - use-reproduction? Switch 위젯
+;;;
+;;; v7 변경 (유지):
+;;;   - 메모리 상속을 베인브릿지 방식으로
+;;;
+;;; v6 변경 (유지):
+;;;   - life 초기값 500~1000 무작위
+;;; ============================================================
+
+globals [
+  reward-names
+  material-reward-names
+  theory-sizes
+  trade-amount
+  max-population
+  use-observers?
+
+  next-agent-id-energy
+  next-agent-id-water
+  next-agent-id-food
+  next-agent-id-oxygen
+
+  vacancies-energy
+  vacancies-water
+  vacancies-food
+  vacancies-oxygen
+  total-vacancies
+
+  births-this-tick
+  deaths-this-tick
+  successful-trades-this-tick
+  failed-trades-this-tick
+
+  max-life-span
+
+  mean-faith
+  mean-natural-life-prob
+  mean-supernatural-life-prob
+
+  mean-faith-energy-role
+  mean-faith-water-role
+  mean-faith-food-role
+  mean-faith-oxygen-role
+
+  mean-wealth-energy-role
+  mean-wealth-water-role
+  mean-wealth-food-role
+  mean-wealth-oxygen-role
+
+  role-births-energy
+  role-births-water
+  role-births-food
+  role-births-oxygen
+
+  role-deaths-energy
+  role-deaths-water
+  role-deaths-food
+  role-deaths-oxygen
+
+  ;; v9: 직업군별 사망 시점 누적 신앙도
+  cum-deathfaith-energy
+  cum-deathfaith-water
+  cum-deathfaith-food
+  cum-deathfaith-oxygen
+  cum-deathcount-energy
+  cum-deathcount-water
+  cum-deathcount-food
+  cum-deathcount-oxygen
+]
+
+turtles-own [
+  agent-id
+  role
+
+  energy
+  water
+  food
+  oxygen
+  life
+
+  mem-energy
+  mem-water
+  mem-food
+  mem-oxygen
+  mem-life
+
+  mother-id
+  father-id
+
+  wealth
+
+  is-observer?
+  observer-id
+]
+
+;;; SETUP
+
+to setup
+  clear-all
+  setup-globals
+  setup-initial-population
+  if use-observers? [ setup-observers ]
+  update-monitors
+  reset-ticks
+end
+
+to setup-globals
+  set reward-names ["energy" "water" "food" "oxygen" "life"]
+  set material-reward-names ["energy" "water" "food" "oxygen"]
+  set theory-sizes [2 3 4]
+  set trade-amount 50
+  set max-population 1000
+  set max-life-span 1200
+
+  set use-observers? false
+
+  set next-agent-id-energy 4
+  set next-agent-id-water  1
+  set next-agent-id-food   2
+  set next-agent-id-oxygen 3
+
+  set vacancies-energy 0
+  set vacancies-water 0
+  set vacancies-food 0
+  set vacancies-oxygen 0
+  set total-vacancies 0
+
+  set births-this-tick 0
+  set deaths-this-tick 0
+  set successful-trades-this-tick 0
+  set failed-trades-this-tick 0
+
+  set mean-faith 0
+  set mean-natural-life-prob 0
+  set mean-supernatural-life-prob 0
+
+  set mean-faith-energy-role 0
+  set mean-faith-water-role 0
+  set mean-faith-food-role 0
+  set mean-faith-oxygen-role 0
+
+  set mean-wealth-energy-role 0
+  set mean-wealth-water-role 0
+  set mean-wealth-food-role 0
+  set mean-wealth-oxygen-role 0
+
+  set role-births-energy 0
+  set role-births-water 0
+  set role-births-food 0
+  set role-births-oxygen 0
+
+  set role-deaths-energy 0
+  set role-deaths-water 0
+  set role-deaths-food 0
+  set role-deaths-oxygen 0
+
+  set cum-deathfaith-energy 0
+  set cum-deathfaith-water 0
+  set cum-deathfaith-food 0
+  set cum-deathfaith-oxygen 0
+  set cum-deathcount-energy 0
+  set cum-deathcount-water 0
+  set cum-deathcount-food 0
+  set cum-deathcount-oxygen 0
+end
+
+to setup-initial-population
+  let n-per-role (max-population / 4)
+  repeat n-per-role [
+    create-turtles 1 [ initialize-new-agent "energy" ]
+    create-turtles 1 [ initialize-new-agent "water"  ]
+    create-turtles 1 [ initialize-new-agent "food"   ]
+    create-turtles 1 [ initialize-new-agent "oxygen" ]
+  ]
+end
+
+to setup-observers
+  let roles ["energy" "water" "food" "oxygen"]
+  let i 0
+  while [i < 4] [
+    let r item i roles
+    create-turtles 1 [
+      initialize-new-agent r
+      set is-observer? true
+      set observer-id (i + 1)
+      set life max-life-span
+      set size 2
+    ]
+    set i i + 1
+  ]
+end
+
+;;; AGENT INITIALIZATION
+
+to initialize-new-agent [new-role]
+  setxy random-xcor random-ycor
+  set size 1
+  set shape "person"
+
+  set agent-id next-id-for-role new-role
+
+  set life 500 + random 501
+
+  set mother-id -1
+  set father-id -1
+
+  set-role-appearance new-role
+  set-role-starter-kit new-role
+
+  set mem-energy random-memory
+  set mem-water  random-memory
+  set mem-food   random-memory
+  set mem-oxygen random-memory
+  set mem-life   random-memory
+
+  set is-observer? false
+  set observer-id 0
+
+  update-wealth
+end
+
+to initialize-replacement-agent [new-role mother father]
+  setxy random-xcor random-ycor
+  set size 1
+  set shape "person"
+
+  set agent-id next-id-for-role new-role
+
+  ifelse mother != nobody
+  [ set mother-id [agent-id] of mother ]
+  [ set mother-id -1 ]
+
+  ifelse father != nobody
+  [ set father-id [agent-id] of father ]
+  [ set father-id -1 ]
+
+  set-role-appearance new-role
+  set-role-starter-kit new-role
+
+  set life 500 + random 501
+
+  ifelse (mother != nobody) and (father != nobody) [
+    set mem-energy inherit-memory ([mem-energy] of mother) ([mem-energy] of father)
+    set mem-water  inherit-memory ([mem-water]  of mother) ([mem-water]  of father)
+    set mem-food   inherit-memory ([mem-food]   of mother) ([mem-food]   of father)
+    set mem-oxygen inherit-memory ([mem-oxygen] of mother) ([mem-oxygen] of father)
+    set mem-life   inherit-memory ([mem-life]   of mother) ([mem-life]   of father)
+  ] [
+    set mem-energy random-memory
+    set mem-water  random-memory
+    set mem-food   random-memory
+    set mem-oxygen random-memory
+    set mem-life   random-memory
+  ]
+
+  set is-observer? false
+  set observer-id 0
+
+  update-wealth
+end
+
+to-report next-id-for-role [role-name]
+  if role-name = "energy" [
+    let id next-agent-id-energy
+    set next-agent-id-energy next-agent-id-energy + 4
+    report id
+  ]
+  if role-name = "water" [
+    let id next-agent-id-water
+    set next-agent-id-water next-agent-id-water + 4
+    report id
+  ]
+  if role-name = "food" [
+    let id next-agent-id-food
+    set next-agent-id-food next-agent-id-food + 4
+    report id
+  ]
+  if role-name = "oxygen" [
+    let id next-agent-id-oxygen
+    set next-agent-id-oxygen next-agent-id-oxygen + 4
+    report id
+  ]
+  report 0
+end
+
+to set-role-appearance [new-role]
+  set role new-role
+  if role = "energy" [ set color yellow ]
+  if role = "water"  [ set color blue   ]
+  if role = "food"   [ set color green  ]
+  if role = "oxygen" [ set color cyan   ]
+end
+
+to set-role-starter-kit [new-role]
+  if new-role = "energy" [
+    set energy 600 set water 400 set food 400 set oxygen 400
+  ]
+  if new-role = "water" [
+    set energy 700 set water 500 set food 400 set oxygen 400
+  ]
+  if new-role = "food" [
+    set energy 400 set water 700 set food 500 set oxygen 400
+  ]
+  if new-role = "oxygen" [
+    set energy 650 set water 650 set food 400 set oxygen 500
+  ]
+end
+
+to-report random-memory
+  report (list
+    (list (500 + random 500) (500 + random 500) (500 + random 500) (500 + random 500))
+    (list (500 + random 500) (500 + random 500) (500 + random 500) (500 + random 500))
+    (list (500 + random 500) (500 + random 500) (500 + random 500) (500 + random 500))
+  )
+end
+
+;;; ============================================================
+;;; MEMORY INHERITANCE (베인브릿지 방식)
+;;; ============================================================
+
+to-report inherit-memory [mem1 mem2]
+  if (not is-list? mem1) or (not is-list? mem2) [
+    report random-memory
+  ]
+  report (list
+    (inherit-row-by-variance (item 0 mem1) (item 0 mem2))
+    (inherit-row-by-variance (item 1 mem1) (item 1 mem2))
+    (inherit-row-by-variance (item 2 mem1) (item 2 mem2))
+  )
+end
+
+to-report inherit-row-by-variance [row1 row2]
+  let v1 row-variance row1
+  let v2 row-variance row2
+  ifelse v1 >= v2
+  [ report row1 ]
+  [ report row2 ]
+end
+
+;;; MAIN LOOP
+
+to go
+  if not any? turtles and total-vacancies = 0 [ stop ]
+
+  reset-tick-counters
+
+  ask turtles [
+    consume-basic
+
+    if dead-now? [
+      handle-death
+      die
+      stop
+    ]
+
+    produce
+    update-wealth
+
+    if dead-now? [
+      handle-death
+      die
+      stop
+    ]
+
+    choose-and-seek
+    update-wealth
+
+    if dead-now? [
+      handle-death
+      die
+      stop
+    ]
+  ]
+
+  set total-vacancies vacancies-energy + vacancies-water + vacancies-food + vacancies-oxygen
+
+  if use-reproduction? [ fill-vacancies ]
+
+  if count turtles > max-population + (count turtles with [is-observer?]) [
+    trim-excess-population
+  ]
+
+  set total-vacancies vacancies-energy + vacancies-water + vacancies-food + vacancies-oxygen
+
+  update-monitors
+  tick
+end
+
+to reset-tick-counters
+  set births-this-tick 0
+  set deaths-this-tick 0
+  set successful-trades-this-tick 0
+  set failed-trades-this-tick 0
+end
+
+to trim-excess-population
+  let normal-population count turtles with [not is-observer?]
+  let excess (normal-population - max-population)
+  if excess <= 0 [ stop ]
+  let victims min-n-of excess (turtles with [not is-observer?]) [wealth]
+  ask victims [ die ]
+end
+
+;;; LIFE CYCLE
+
+to produce
+  if is-observer? [
+    set energy 1000
+    set water  1000
+    set food   1000
+    set oxygen 1000
+    stop
+  ]
+
+  if role = "energy" [
+    set energy energy + 500
+  ]
+  if role = "water" [
+    if energy >= 250 [
+      set energy energy - 250
+      set water  water  + 500
+    ]
+  ]
+  if role = "food" [
+    if water >= 250 [
+      set water water - 250
+      set food  food  + 500
+    ]
+  ]
+  if role = "oxygen" [
+    if (energy >= 125) and (water >= 125) [
+      set energy energy - 125
+      set water  water  - 125
+      set oxygen oxygen + 500
+    ]
+  ]
+end
+
+to consume-basic
+  if is-observer? [ stop ]
+
+  set energy energy - 1
+  set water  water  - 1
+  set food   food   - 1
+  set oxygen oxygen - 1
+  set life   life   - 1
+end
+
+to-report dead-now?
+  if is-observer? [ report false ]
+  report (energy <= 0) or (water <= 0) or (food <= 0) or (oxygen <= 0) or (life <= 0)
+end
+
+to handle-death
+  set deaths-this-tick deaths-this-tick + 1
+
+  let f faith-score
+
+  if role = "energy" [
+    set role-deaths-energy role-deaths-energy + 1
+    set cum-deathfaith-energy cum-deathfaith-energy + f
+    set cum-deathcount-energy cum-deathcount-energy + 1
+  ]
+  if role = "water"  [
+    set role-deaths-water  role-deaths-water  + 1
+    set cum-deathfaith-water cum-deathfaith-water + f
+    set cum-deathcount-water cum-deathcount-water + 1
+  ]
+  if role = "food"   [
+    set role-deaths-food   role-deaths-food   + 1
+    set cum-deathfaith-food cum-deathfaith-food + f
+    set cum-deathcount-food cum-deathcount-food + 1
+  ]
+  if role = "oxygen" [
+    set role-deaths-oxygen role-deaths-oxygen + 1
+    set cum-deathfaith-oxygen cum-deathfaith-oxygen + f
+    set cum-deathcount-oxygen cum-deathcount-oxygen + 1
+  ]
+
+  record-vacancy
+end
+
+to record-vacancy
+  if role = "energy" [ set vacancies-energy vacancies-energy + 1 ]
+  if role = "water"  [ set vacancies-water  vacancies-water  + 1 ]
+  if role = "food"   [ set vacancies-food   vacancies-food   + 1 ]
+  if role = "oxygen" [ set vacancies-oxygen vacancies-oxygen + 1 ]
+end
+
+;;; VACANCY 충원
+
+to fill-vacancies
+  fill-role-vacancies "energy"
+  fill-role-vacancies "water"
+  fill-role-vacancies "food"
+  fill-role-vacancies "oxygen"
+end
+
+to fill-role-vacancies [role-name]
+  let n vacancies-of-role role-name
+  if n <= 0 [ stop ]
+
+  let parent-pool other turtles with [not is-observer?]
+
+  create-turtles n [
+    let mother nobody
+    let father nobody
+    if any? parent-pool [ set mother one-of parent-pool ]
+    if any? parent-pool [ set father one-of parent-pool ]
+    initialize-replacement-agent role-name mother father
+  ]
+
+  set births-this-tick births-this-tick + n
+
+  if role-name = "energy" [
+    set role-births-energy role-births-energy + n
+    set vacancies-energy 0
+  ]
+  if role-name = "water" [
+    set role-births-water role-births-water + n
+    set vacancies-water 0
+  ]
+  if role-name = "food" [
+    set role-births-food role-births-food + n
+    set vacancies-food 0
+  ]
+  if role-name = "oxygen" [
+    set role-births-oxygen role-births-oxygen + n
+    set vacancies-oxygen 0
+  ]
+end
+
+to-report vacancies-of-role [role-name]
+  if role-name = "energy" [ report vacancies-energy ]
+  if role-name = "water"  [ report vacancies-water  ]
+  if role-name = "food"   [ report vacancies-food   ]
+  if role-name = "oxygen" [ report vacancies-oxygen ]
+  report 0
+end
+
+;;; CHOOSE AND SEEK
+
+to choose-and-seek
+  let reward choose-lowest-reward
+  let mem get-memory reward
+
+  let tprobs theory-probabilities mem
+  let theory-index weighted-choice tprobs
+  let theory-size item theory-index theory-sizes
+
+  let row item theory-index mem
+  let gprobs normalize-row row
+  let chosen-group weighted-choice gprobs
+
+  ifelse reward = "life"
+  [ seek-life     reward theory-index theory-size chosen-group ]
+  [ seek-material reward theory-index theory-size chosen-group ]
+end
+
+to-report choose-lowest-reward
+  let values (list energy water food oxygen life)
+  let minval min values
+  let idx position minval values
+  report item idx reward-names
+end
+
+to-report choose-highest-material-reward
+  let vals (list energy water food oxygen)
+  let maxval max vals
+  let idx position maxval vals
+  report item idx material-reward-names
+end
+
+;;; SEEK MATERIAL
+
+to seek-material [reward theory-index theory-size chosen-group]
+  let ts theory-size
+  let tg chosen-group
+  let ti theory-index
+
+  if tg >= ts [
+    reinforce-failure-by-theory-group reward ti tg
+    stop
+  ]
+
+  if not any? other turtles [ stop ]
+  let partner one-of other turtles
+
+  let their-group ([agent-id] of partner) mod ts
+
+  if their-group != tg [ stop ]
+
+  let offer-reward choose-highest-material-reward
+
+  if offer-reward = reward [
+    set failed-trades-this-tick failed-trades-this-tick + 1
+    reinforce-failure-from-id reward ([agent-id] of partner)
+    stop
+  ]
+
+  let requester-can-give? (stock-of offer-reward >= trade-amount)
+  let responder-can-give? partner-can-supply? partner reward trade-amount
+
+  ifelse requester-can-give? and responder-can-give? [
+    execute-trade partner offer-reward reward trade-amount
+    set successful-trades-this-tick successful-trades-this-tick + 1
+    reinforce-success-from-id reward ([agent-id] of partner)
+  ] [
+    set failed-trades-this-tick failed-trades-this-tick + 1
+    reinforce-failure-from-id reward ([agent-id] of partner)
+  ]
+end
+
+;;; SEEK LIFE
+
+to seek-life [reward theory-index theory-size chosen-group]
+  let ts theory-size
+  let tg chosen-group
+  let ti theory-index
+
+  if tg >= ts [ stop ]
+
+  if not any? other turtles [ stop ]
+  let partner one-of other turtles
+
+  let their-group ([agent-id] of partner) mod ts
+
+  if their-group != tg [ stop ]
+
+  reinforce-failure-from-id reward ([agent-id] of partner)
+end
+
+;;; TRADE PRIMITIVES
+
+to-report partner-can-supply? [partner need-reward amount]
+  if need-reward = "energy" [ report ([energy] of partner >= amount) ]
+  if need-reward = "water"  [ report ([water]  of partner >= amount) ]
+  if need-reward = "food"   [ report ([food]   of partner >= amount) ]
+  if need-reward = "oxygen" [ report ([oxygen] of partner >= amount) ]
+  report false
+end
+
+to execute-trade [partner offer-reward need-reward amount]
+  add-stock-self offer-reward (- amount)
+  add-stock-self need-reward amount
+  ask partner [
+    add-stock-self offer-reward amount
+    add-stock-self need-reward (- amount)
+  ]
+end
+
+to-report stock-of [reward]
+  if reward = "energy" [ report energy ]
+  if reward = "water"  [ report water  ]
+  if reward = "food"   [ report food   ]
+  if reward = "oxygen" [ report oxygen ]
+  if reward = "life"   [ report life   ]
+  report 0
+end
+
+to add-stock-self [reward delta]
+  if reward = "energy" [ set energy energy + delta ]
+  if reward = "water"  [ set water  water  + delta ]
+  if reward = "food"   [ set food   food   + delta ]
+  if reward = "oxygen" [ set oxygen oxygen + delta ]
+  if reward = "life"   [ set life   life   + delta ]
+end
+
+to update-wealth
+  set wealth energy + water + food + oxygen
+end
+
+;;; MEMORY OPERATIONS
+
+to reinforce-success-from-id [reward target-id]
+  let g2 (target-id mod 2)
+  let g3 (target-id mod 3)
+  let g4 (target-id mod 4)
+
+  let mem get-memory reward
+  set mem add-to-cell mem 0 g2 250
+  set mem add-to-cell mem 1 g3 250
+  set mem add-to-cell mem 2 g4 250
+  set-memory reward mem
+end
+
+to reinforce-failure-from-id [reward target-id]
+  let g2 (target-id mod 2)
+  let g3 (target-id mod 3)
+  let g4 (target-id mod 4)
+
+  let mem get-memory reward
+  set mem add-to-cell mem 0 g2 (-100)
+  set mem add-to-cell mem 1 g3 (-100)
+  set mem add-to-cell mem 2 g4 (-100)
+  set-memory reward mem
+end
+
+to reinforce-failure-by-theory-group [reward theory-index group-index]
+  let mem get-memory reward
+  set mem add-to-cell mem theory-index group-index (-100)
+  set-memory reward mem
+end
+
+to-report add-to-cell [mem row col delta]
+  let old-row item row mem
+  let old-val item col old-row
+  let new-val old-val + delta
+  if new-val < 50 [ set new-val 50 ]
+  let new-row replace-item col old-row new-val
+  report replace-item row mem new-row
+end
+
+to-report get-memory [reward]
+  if reward = "energy" [ report mem-energy ]
+  if reward = "water"  [ report mem-water  ]
+  if reward = "food"   [ report mem-food   ]
+  if reward = "oxygen" [ report mem-oxygen ]
+  if reward = "life"   [ report mem-life   ]
+  report mem-life
+end
+
+to set-memory [reward mem]
+  if reward = "energy" [ set mem-energy mem ]
+  if reward = "water"  [ set mem-water  mem ]
+  if reward = "food"   [ set mem-food   mem ]
+  if reward = "oxygen" [ set mem-oxygen mem ]
+  if reward = "life"   [ set mem-life   mem ]
+end
+
+to-report theory-probabilities [mem]
+  let v2 row-variance (item 0 mem)
+  let v3 row-variance (item 1 mem)
+  let v4 row-variance (item 2 mem)
+  let total (v2 + v3 + v4)
+  if total = 0 [
+    report (list (1 / 3) (1 / 3) (1 / 3))
+  ]
+  report (list (v2 / total) (v3 / total) (v4 / total))
+end
+
+to-report row-variance [row]
+  let m mean row
+  let sqdiffs map [x -> (x - m) * (x - m)] row
+  report mean sqdiffs
+end
+
+to-report normalize-row [row]
+  let s sum row
+  if s = 0 [ report (list 0.25 0.25 0.25 0.25) ]
+  report map [x -> x / s] row
+end
+
+to-report weighted-choice [probs]
+  let r random-float 1
+  let cumulative 0
+  let i 0
+  while [i < length probs] [
+    set cumulative cumulative + item i probs
+    if r <= cumulative [ report i ]
+    set i i + 1
+  ]
+  report (length probs - 1)
+end
+
+;;; FAITH METRICS
+
+to-report faith-score
+  report supernatural-life-prob
+end
+
+to-report supernatural-life-prob
+  let mem mem-life
+  let tprobs theory-probabilities mem
+
+  let row2 normalize-row (item 0 mem)
+  let row3 normalize-row (item 1 mem)
+
+  let p2 item 0 tprobs
+  let p3 item 1 tprobs
+
+  let s1 (p2 * item 2 row2)
+  let s2 (p2 * item 3 row2)
+  let s3 (p3 * item 3 row3)
+
+  report (s1 + s2 + s3)
+end
+
+to-report natural-life-prob
+  let mem mem-life
+  let tprobs theory-probabilities mem
+
+  let row2 normalize-row (item 0 mem)
+  let row3 normalize-row (item 1 mem)
+  let row4 normalize-row (item 2 mem)
+
+  let p2 item 0 tprobs
+  let p3 item 1 tprobs
+  let p4 item 2 tprobs
+
+  let n2 (p2 * ((item 0 row2) + (item 1 row2)))
+  let n3 (p3 * ((item 0 row3) + (item 1 row3) + (item 2 row3)))
+  let n4 (p4 * ((item 0 row4) + (item 1 row4) + (item 2 row4) + (item 3 row4)))
+
+  report (n2 + n3 + n4)
+end
+
+to-report mean-life-theory2-prob
+  if not any? turtles [ report 0 ]
+  report mean [ item 0 (theory-probabilities mem-life) ] of turtles
+end
+
+to-report mean-life-theory3-prob
+  if not any? turtles [ report 0 ]
+  report mean [ item 1 (theory-probabilities mem-life) ] of turtles
+end
+
+to-report mean-life-theory4-prob
+  if not any? turtles [ report 0 ]
+  report mean [ item 2 (theory-probabilities mem-life) ] of turtles
+end
+
+;;; ANALYSIS REPORTERS
+
+to-report normal-turtles
+  report turtles with [not is-observer?]
+end
+
+to-report all-faith-scores
+  if not any? normal-turtles [ report [] ]
+  report [faith-score] of normal-turtles
+end
+
+to-report faith-stdev
+  if count normal-turtles < 2 [ report 0 ]
+  report standard-deviation [faith-score] of normal-turtles
+end
+
+to-report faith-percentile-10
+  if not any? normal-turtles [ report 0 ]
+  let sorted sort [faith-score] of normal-turtles
+  report item (floor (length sorted * 0.10)) sorted
+end
+
+to-report faith-percentile-90
+  if not any? normal-turtles [ report 0 ]
+  let sorted sort [faith-score] of normal-turtles
+  report item (floor (length sorted * 0.90)) sorted
+end
+
+to-report wealth-faith-correlation
+  if count normal-turtles < 2 [ report 0 ]
+  let xs [wealth]      of normal-turtles
+  let ys [faith-score] of normal-turtles
+  report pearson-correlation xs ys
+end
+
+to-report pearson-correlation [xs ys]
+  let n length xs
+  if n < 2 [ report 0 ]
+  let mx mean xs
+  let my mean ys
+  let num 0
+  let sx2 0
+  let sy2 0
+  let i 0
+  while [i < n] [
+    let diff-x (item i xs) - mx
+    let diff-y (item i ys) - my
+    set num num + diff-x * diff-y
+    set sx2 sx2 + diff-x * diff-x
+    set sy2 sy2 + diff-y * diff-y
+    set i i + 1
+  ]
+  let denom sqrt (sx2 * sy2)
+  if denom = 0 [ report 0 ]
+  report num / denom
+end
+
+to-report theory2-prob-stdev
+  if count normal-turtles < 2 [ report 0 ]
+  report standard-deviation [item 0 (theory-probabilities mem-life)] of normal-turtles
+end
+
+to-report theory4-prob-stdev
+  if count normal-turtles < 2 [ report 0 ]
+  report standard-deviation [item 2 (theory-probabilities mem-life)] of normal-turtles
+end
+
+;;; v9: 사망 시점 누적 신앙도 reporters
+
+to-report mean-deathfaith-energy
+  if cum-deathcount-energy = 0 [ report 0 ]
+  report cum-deathfaith-energy / cum-deathcount-energy
+end
+
+to-report mean-deathfaith-water
+  if cum-deathcount-water = 0 [ report 0 ]
+  report cum-deathfaith-water / cum-deathcount-water
+end
+
+to-report mean-deathfaith-food
+  if cum-deathcount-food = 0 [ report 0 ]
+  report cum-deathfaith-food / cum-deathcount-food
+end
+
+to-report mean-deathfaith-oxygen
+  if cum-deathcount-oxygen = 0 [ report 0 ]
+  report cum-deathfaith-oxygen / cum-deathcount-oxygen
+end
+
+;;; OBSERVER REPORTERS
+
+to-report observer-1-faith
+  let obs one-of turtles with [is-observer? and observer-id = 1]
+  ifelse obs = nobody [ report 0 ] [ report [faith-score] of obs ]
+end
+
+to-report observer-2-faith
+  let obs one-of turtles with [is-observer? and observer-id = 2]
+  ifelse obs = nobody [ report 0 ] [ report [faith-score] of obs ]
+end
+
+to-report observer-3-faith
+  let obs one-of turtles with [is-observer? and observer-id = 3]
+  ifelse obs = nobody [ report 0 ] [ report [faith-score] of obs ]
+end
+
+to-report observer-4-faith
+  let obs one-of turtles with [is-observer? and observer-id = 4]
+  ifelse obs = nobody [ report 0 ] [ report [faith-score] of obs ]
+end
+
+to-report observer-1-role
+  let obs one-of turtles with [is-observer? and observer-id = 1]
+  ifelse obs = nobody [ report "" ] [ report [role] of obs ]
+end
+
+to-report observer-2-role
+  let obs one-of turtles with [is-observer? and observer-id = 2]
+  ifelse obs = nobody [ report "" ] [ report [role] of obs ]
+end
+
+to-report observer-3-role
+  let obs one-of turtles with [is-observer? and observer-id = 3]
+  ifelse obs = nobody [ report "" ] [ report [role] of obs ]
+end
+
+to-report observer-4-role
+  let obs one-of turtles with [is-observer? and observer-id = 4]
+  ifelse obs = nobody [ report "" ] [ report [role] of obs ]
+end
+
+to-report observer-1-life-memory-flat
+  let obs one-of turtles with [is-observer? and observer-id = 1]
+  ifelse obs = nobody [ report n-values 12 [0] ] [ report flatten-memory ([mem-life] of obs) ]
+end
+
+to-report observer-2-life-memory-flat
+  let obs one-of turtles with [is-observer? and observer-id = 2]
+  ifelse obs = nobody [ report n-values 12 [0] ] [ report flatten-memory ([mem-life] of obs) ]
+end
+
+to-report observer-3-life-memory-flat
+  let obs one-of turtles with [is-observer? and observer-id = 3]
+  ifelse obs = nobody [ report n-values 12 [0] ] [ report flatten-memory ([mem-life] of obs) ]
+end
+
+to-report observer-4-life-memory-flat
+  let obs one-of turtles with [is-observer? and observer-id = 4]
+  ifelse obs = nobody [ report n-values 12 [0] ] [ report flatten-memory ([mem-life] of obs) ]
+end
+
+to-report flatten-memory [mem]
+  let r0 item 0 mem
+  let r1 item 1 mem
+  let r2 item 2 mem
+  report (sentence r0 r1 r2)
+end
+
+to-report trade-success-rate
+  let total successful-trades-this-tick + failed-trades-this-tick
+  if total = 0 [ report 0 ]
+  report successful-trades-this-tick / total
+end
+
+;;; MONITOR UPDATES
+
+to update-monitors
+  ifelse any? normal-turtles [
+    set mean-faith                  mean [faith-score]            of normal-turtles
+    set mean-natural-life-prob      mean [natural-life-prob]      of normal-turtles
+    set mean-supernatural-life-prob mean [supernatural-life-prob] of normal-turtles
+
+    ifelse any? normal-turtles with [role = "energy"] [
+      set mean-faith-energy-role  mean [faith-score] of normal-turtles with [role = "energy"]
+      set mean-wealth-energy-role mean [wealth]      of normal-turtles with [role = "energy"]
+    ] [
+      set mean-faith-energy-role  0
+      set mean-wealth-energy-role 0
+    ]
+
+    ifelse any? normal-turtles with [role = "water"] [
+      set mean-faith-water-role  mean [faith-score] of normal-turtles with [role = "water"]
+      set mean-wealth-water-role mean [wealth]      of normal-turtles with [role = "water"]
+    ] [
+      set mean-faith-water-role  0
+      set mean-wealth-water-role 0
+    ]
+
+    ifelse any? normal-turtles with [role = "food"] [
+      set mean-faith-food-role  mean [faith-score] of normal-turtles with [role = "food"]
+      set mean-wealth-food-role mean [wealth]      of normal-turtles with [role = "food"]
+    ] [
+      set mean-faith-food-role  0
+      set mean-wealth-food-role 0
+    ]
+
+    ifelse any? normal-turtles with [role = "oxygen"] [
+      set mean-faith-oxygen-role  mean [faith-score] of normal-turtles with [role = "oxygen"]
+      set mean-wealth-oxygen-role mean [wealth]      of normal-turtles with [role = "oxygen"]
+    ] [
+      set mean-faith-oxygen-role  0
+      set mean-wealth-oxygen-role 0
+    ]
+  ] [
+    set mean-faith 0
+    set mean-natural-life-prob 0
+    set mean-supernatural-life-prob 0
+
+    set mean-faith-energy-role 0
+    set mean-faith-water-role 0
+    set mean-faith-food-role 0
+    set mean-faith-oxygen-role 0
+
+    set mean-wealth-energy-role 0
+    set mean-wealth-water-role 0
+    set mean-wealth-food-role 0
+    set mean-wealth-oxygen-role 0
+  ]
+
+  set total-vacancies vacancies-energy + vacancies-water + vacancies-food + vacancies-oxygen
+end]]></code>
+  <widgets>
+    <view x="888" wrappingAllowedX="true" y="10" frameRate="30.0" minPycor="-16" height="446" showTickCounter="true" patchSize="13.4" fontSize="10" wrappingAllowedY="true" width="446" tickCounterLabel="ticks" maxPycor="16" updateMode="0" maxPxcor="16" minPxcor="-16"></view>
+    <button x="13" y="10" height="40" disableUntilTicks="false" forever="false" kind="Observer" display="setup" width="66" sizeVersion="0">setup
+</button>
+    <button x="100" y="10" height="40" disableUntilTicks="false" forever="true" kind="Observer" display="go" width="63" sizeVersion="0">go</button>
+    <monitor x="8" precision="17" y="62" height="60" fontSize="11" display="mean-faith" width="100" sizeVersion="0">mean-faith</monitor>
+    <monitor x="121" precision="17" y="62" height="60" fontSize="11" display="count turtles" width="100" sizeVersion="0">count turtles</monitor>
+    <monitor x="10" precision="17" y="139" height="60" fontSize="11" display="mean energy" width="100" sizeVersion="0">mean [energy] of turtles</monitor>
+    <monitor x="144" precision="17" y="138" height="60" fontSize="11" display="mean water" width="100" sizeVersion="0">mean [water] of turtles</monitor>
+    <monitor x="255" precision="17" y="131" height="60" fontSize="11" display="mean food" width="100" sizeVersion="0">mean [food] of turtles</monitor>
+    <monitor x="384" precision="17" y="125" height="60" fontSize="11" display="mean oxygen" width="100" sizeVersion="0">mean [oxygen] of turtles</monitor>
+    <monitor x="497" precision="17" y="127" height="60" fontSize="11" display="mean life" width="100" sizeVersion="0">mean [life] of turtles</monitor>
+    <monitor x="247" precision="17" y="59" height="60" fontSize="11" display="births-this-tick " width="106" sizeVersion="0">births-this-tick</monitor>
+    <monitor x="400" precision="17" y="60" height="60" fontSize="11" display="deaths-this-tick " width="114" sizeVersion="0">deaths-this-tick</monitor>
+    <monitor x="31" precision="17" y="211" height="60" fontSize="11" display="mean-wealth-energy-role " width="172" sizeVersion="0">mean-wealth-energy-role</monitor>
+    <monitor x="231" precision="17" y="214" height="60" fontSize="11" width="158" sizeVersion="0">mean-wealth-water-role</monitor>
+    <monitor x="400" precision="17" y="209" height="60" fontSize="11" width="155" sizeVersion="0">mean-wealth-food-role</monitor>
+    <monitor x="577" precision="17" y="209" height="60" fontSize="11" width="173" sizeVersion="0">mean-wealth-oxygen-role</monitor>
+    <monitor x="25" precision="17" y="305" height="60" fontSize="11" display="mean-life-theory2-prob " width="161" sizeVersion="0">mean-life-theory2-prob</monitor>
+    <monitor x="202" precision="17" y="303" height="60" fontSize="11" display="mean-life-theory3-prob " width="161" sizeVersion="0">mean-life-theory3-prob</monitor>
+    <monitor x="400" precision="17" y="295" height="60" fontSize="11" width="156" sizeVersion="0">mean-life-theory4-prob</monitor>
+    <monitor x="577" precision="17" y="295" height="60" fontSize="11" width="146" sizeVersion="0">total-vacancies</monitor>
+    <switch x="198" y="15" height="40" on="false" variable="use-reproduction?" width="134" display="use-reproduction?"></switch>
+    <plot x="14" autoPlotX="true" yMax="1.0" autoPlotY="true" yAxis="faith" y="388" xMin="0.0" height="175" legend="false" xMax="500.0" yMin="0.0" xAxis="ticks" display="mean-faith" width="230" sizeVersion="0">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="mean-faith" color="-16777216" legend="true">
+        <setup>plot mean-faith</setup>
+        <update>plot mean-faith</update>
+      </pen>
+    </plot>
+    <monitor x="503" precision="17" y="454" height="60" fontSize="11" width="227" sizeVersion="0">count turtles with [role = "oxygen"]</monitor>
+    <monitor x="268" precision="17" y="454" height="60" fontSize="11" width="209" sizeVersion="0">count turtles with [role = "food"]</monitor>
+    <monitor x="258" precision="17" y="379" height="60" fontSize="11" width="221" sizeVersion="0">count turtles with [role = "energy"]</monitor>
+    <monitor x="499" precision="17" y="379" height="60" fontSize="11" width="212" sizeVersion="0">count turtles with [role = "water"]</monitor>
+    <monitor x="18" precision="17" y="696" height="60" fontSize="11" width="305" sizeVersion="0"><![CDATA[mean [faith-score] of turtles with [life >= 600]]]></monitor>
+    <monitor x="17" precision="17" y="566" height="60" fontSize="11" width="299" sizeVersion="0"><![CDATA[mean [faith-score] of turtles with [life < 200]]]></monitor>
+    <monitor x="17" precision="17" y="631" height="60" fontSize="11" width="396" sizeVersion="0"><![CDATA[mean [faith-score] of turtles with [life >= 200 and life < 600]]]></monitor>
+  </widgets>
+  <info>## WHAT IS IT?
+
+(a general understanding of what the model is trying to show or explain)
+
+## HOW IT WORKS
+
+(what rules the agents use to create the overall behavior of the model)
+
+## HOW TO USE IT
+
+(how to use the model, including a description of each of the items in the Interface tab)
+
+## THINGS TO NOTICE
+
+(suggested things for the user to notice while running the model)
+
+## THINGS TO TRY
+
+(suggested things for the user to try to do (move sliders, switches, etc.) with the model)
+
+## EXTENDING THE MODEL
+
+(suggested things to add or change in the Code tab to make the model more complicated, detailed, accurate, etc.)
+
+## NETLOGO FEATURES
+
+(interesting or unusual features of NetLogo that the model uses, particularly in the Code tab; or where workarounds were needed for missing features)
+
+## RELATED MODELS
+
+(models in the NetLogo Models Library and elsewhere which are of related interest)
+
+## CREDITS AND REFERENCES
+
+(a reference to the model's URL on the web if it has one, as well as any other necessary credits, citations, and links)</info>
+  <turtleShapes>
+    <shape name="default" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="5"></point>
+        <point x="40" y="250"></point>
+        <point x="150" y="205"></point>
+        <point x="260" y="250"></point>
+      </polygon>
+    </shape>
+    <shape name="airplane" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0"></point>
+        <point x="135" y="15"></point>
+        <point x="120" y="60"></point>
+        <point x="120" y="105"></point>
+        <point x="15" y="165"></point>
+        <point x="15" y="195"></point>
+        <point x="120" y="180"></point>
+        <point x="135" y="240"></point>
+        <point x="105" y="270"></point>
+        <point x="120" y="285"></point>
+        <point x="150" y="270"></point>
+        <point x="180" y="285"></point>
+        <point x="210" y="270"></point>
+        <point x="165" y="240"></point>
+        <point x="180" y="180"></point>
+        <point x="285" y="195"></point>
+        <point x="285" y="165"></point>
+        <point x="180" y="105"></point>
+        <point x="180" y="60"></point>
+        <point x="165" y="15"></point>
+      </polygon>
+    </shape>
+    <shape name="arrow" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0"></point>
+        <point x="0" y="150"></point>
+        <point x="105" y="150"></point>
+        <point x="105" y="293"></point>
+        <point x="195" y="293"></point>
+        <point x="195" y="150"></point>
+        <point x="300" y="150"></point>
+      </polygon>
+    </shape>
+    <shape name="box" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="285"></point>
+        <point x="285" y="225"></point>
+        <point x="285" y="75"></point>
+        <point x="150" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="135"></point>
+        <point x="15" y="75"></point>
+        <point x="150" y="15"></point>
+        <point x="285" y="75"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="15" y="75"></point>
+        <point x="15" y="225"></point>
+        <point x="150" y="285"></point>
+        <point x="150" y="135"></point>
+      </polygon>
+      <line endX="150" startY="285" marked="false" color="255" endY="135" startX="150"></line>
+      <line endX="15" startY="135" marked="false" color="255" endY="75" startX="150"></line>
+      <line endX="285" startY="135" marked="false" color="255" endY="75" startX="150"></line>
+    </shape>
+    <shape name="bug" rotatable="true" editableColorIndex="0">
+      <circle x="96" y="182" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="110" y="127" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <circle x="110" y="75" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <line endX="80" startY="100" marked="true" color="-1920102913" endY="30" startX="150"></line>
+      <line endX="220" startY="100" marked="true" color="-1920102913" endY="30" startX="150"></line>
+    </shape>
+    <shape name="butterfly" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="165"></point>
+        <point x="209" y="199"></point>
+        <point x="225" y="225"></point>
+        <point x="225" y="255"></point>
+        <point x="195" y="270"></point>
+        <point x="165" y="255"></point>
+        <point x="150" y="240"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="165"></point>
+        <point x="89" y="198"></point>
+        <point x="75" y="225"></point>
+        <point x="75" y="255"></point>
+        <point x="105" y="270"></point>
+        <point x="135" y="255"></point>
+        <point x="150" y="240"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="139" y="148"></point>
+        <point x="100" y="105"></point>
+        <point x="55" y="90"></point>
+        <point x="25" y="90"></point>
+        <point x="10" y="105"></point>
+        <point x="10" y="135"></point>
+        <point x="25" y="180"></point>
+        <point x="40" y="195"></point>
+        <point x="85" y="194"></point>
+        <point x="139" y="163"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="162" y="150"></point>
+        <point x="200" y="105"></point>
+        <point x="245" y="90"></point>
+        <point x="275" y="90"></point>
+        <point x="290" y="105"></point>
+        <point x="290" y="135"></point>
+        <point x="275" y="180"></point>
+        <point x="260" y="195"></point>
+        <point x="215" y="195"></point>
+        <point x="162" y="165"></point>
+      </polygon>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="255"></point>
+        <point x="135" y="225"></point>
+        <point x="120" y="150"></point>
+        <point x="135" y="120"></point>
+        <point x="150" y="105"></point>
+        <point x="165" y="120"></point>
+        <point x="180" y="150"></point>
+        <point x="165" y="225"></point>
+      </polygon>
+      <circle x="135" y="90" marked="false" color="255" diameter="30" filled="true"></circle>
+      <line endX="195" startY="105" marked="false" color="255" endY="60" startX="150"></line>
+      <line endX="105" startY="105" marked="false" color="255" endY="60" startX="150"></line>
+    </shape>
+    <shape name="car" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="300" y="180"></point>
+        <point x="279" y="164"></point>
+        <point x="261" y="144"></point>
+        <point x="240" y="135"></point>
+        <point x="226" y="132"></point>
+        <point x="213" y="106"></point>
+        <point x="203" y="84"></point>
+        <point x="185" y="63"></point>
+        <point x="159" y="50"></point>
+        <point x="135" y="50"></point>
+        <point x="75" y="60"></point>
+        <point x="0" y="150"></point>
+        <point x="0" y="165"></point>
+        <point x="0" y="225"></point>
+        <point x="300" y="225"></point>
+        <point x="300" y="180"></point>
+      </polygon>
+      <circle x="180" y="180" marked="false" color="255" diameter="90" filled="true"></circle>
+      <circle x="30" y="180" marked="false" color="255" diameter="90" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="162" y="80"></point>
+        <point x="132" y="78"></point>
+        <point x="134" y="135"></point>
+        <point x="209" y="135"></point>
+        <point x="194" y="105"></point>
+        <point x="189" y="96"></point>
+        <point x="180" y="89"></point>
+      </polygon>
+      <circle x="47" y="195" marked="true" color="-1920102913" diameter="58" filled="true"></circle>
+      <circle x="195" y="195" marked="true" color="-1920102913" diameter="58" filled="true"></circle>
+    </shape>
+    <shape name="circle" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="circle 2" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+    </shape>
+    <shape name="cow" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="200" y="193"></point>
+        <point x="197" y="249"></point>
+        <point x="179" y="249"></point>
+        <point x="177" y="196"></point>
+        <point x="166" y="187"></point>
+        <point x="140" y="189"></point>
+        <point x="93" y="191"></point>
+        <point x="78" y="179"></point>
+        <point x="72" y="211"></point>
+        <point x="49" y="209"></point>
+        <point x="48" y="181"></point>
+        <point x="37" y="149"></point>
+        <point x="25" y="120"></point>
+        <point x="25" y="89"></point>
+        <point x="45" y="72"></point>
+        <point x="103" y="84"></point>
+        <point x="179" y="75"></point>
+        <point x="198" y="76"></point>
+        <point x="252" y="64"></point>
+        <point x="272" y="81"></point>
+        <point x="293" y="103"></point>
+        <point x="285" y="121"></point>
+        <point x="255" y="121"></point>
+        <point x="242" y="118"></point>
+        <point x="224" y="167"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="73" y="210"></point>
+        <point x="86" y="251"></point>
+        <point x="62" y="249"></point>
+        <point x="48" y="208"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="25" y="114"></point>
+        <point x="16" y="195"></point>
+        <point x="9" y="204"></point>
+        <point x="23" y="213"></point>
+        <point x="25" y="200"></point>
+        <point x="39" y="123"></point>
+      </polygon>
+    </shape>
+    <shape name="cylinder" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="dot" rotatable="false" editableColorIndex="0">
+      <circle x="90" y="90" marked="true" color="-1920102913" diameter="120" filled="true"></circle>
+    </shape>
+    <shape name="face happy" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="8" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="255"></point>
+        <point x="90" y="239"></point>
+        <point x="62" y="213"></point>
+        <point x="47" y="191"></point>
+        <point x="67" y="179"></point>
+        <point x="90" y="203"></point>
+        <point x="109" y="218"></point>
+        <point x="150" y="225"></point>
+        <point x="192" y="218"></point>
+        <point x="210" y="203"></point>
+        <point x="227" y="181"></point>
+        <point x="251" y="194"></point>
+        <point x="236" y="217"></point>
+        <point x="212" y="240"></point>
+      </polygon>
+    </shape>
+    <shape name="face neutral" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="7" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <rectangle endX="240" startY="195" marked="false" color="255" endY="225" startX="60" filled="true"></rectangle>
+    </shape>
+    <shape name="face sad" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="8" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="168"></point>
+        <point x="90" y="184"></point>
+        <point x="62" y="210"></point>
+        <point x="47" y="232"></point>
+        <point x="67" y="244"></point>
+        <point x="90" y="220"></point>
+        <point x="109" y="205"></point>
+        <point x="150" y="198"></point>
+        <point x="192" y="205"></point>
+        <point x="210" y="220"></point>
+        <point x="227" y="242"></point>
+        <point x="251" y="229"></point>
+        <point x="236" y="206"></point>
+        <point x="212" y="183"></point>
+      </polygon>
+    </shape>
+    <shape name="fish" rotatable="false" editableColorIndex="0">
+      <polygon color="-1" filled="true" marked="false">
+        <point x="44" y="131"></point>
+        <point x="21" y="87"></point>
+        <point x="15" y="86"></point>
+        <point x="0" y="120"></point>
+        <point x="15" y="150"></point>
+        <point x="0" y="180"></point>
+        <point x="13" y="214"></point>
+        <point x="20" y="212"></point>
+        <point x="45" y="166"></point>
+      </polygon>
+      <polygon color="-1" filled="true" marked="false">
+        <point x="135" y="195"></point>
+        <point x="119" y="235"></point>
+        <point x="95" y="218"></point>
+        <point x="76" y="210"></point>
+        <point x="46" y="204"></point>
+        <point x="60" y="165"></point>
+      </polygon>
+      <polygon color="-1" filled="true" marked="false">
+        <point x="75" y="45"></point>
+        <point x="83" y="77"></point>
+        <point x="71" y="103"></point>
+        <point x="86" y="114"></point>
+        <point x="166" y="78"></point>
+        <point x="135" y="60"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="30" y="136"></point>
+        <point x="151" y="77"></point>
+        <point x="226" y="81"></point>
+        <point x="280" y="119"></point>
+        <point x="292" y="146"></point>
+        <point x="292" y="160"></point>
+        <point x="287" y="170"></point>
+        <point x="270" y="195"></point>
+        <point x="195" y="210"></point>
+        <point x="151" y="212"></point>
+        <point x="30" y="166"></point>
+      </polygon>
+      <circle x="215" y="106" marked="false" color="255" diameter="30" filled="true"></circle>
+    </shape>
+    <shape name="flag" rotatable="false" editableColorIndex="0">
+      <rectangle endX="75" startY="15" marked="true" color="-1920102913" endY="300" startX="60" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="90" y="150"></point>
+        <point x="270" y="90"></point>
+        <point x="90" y="30"></point>
+      </polygon>
+      <line endX="90" startY="135" marked="true" color="-1920102913" endY="135" startX="75"></line>
+      <line endX="90" startY="45" marked="true" color="-1920102913" endY="45" startX="75"></line>
+    </shape>
+    <shape name="flower" rotatable="false" editableColorIndex="0">
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="135" y="120"></point>
+        <point x="165" y="165"></point>
+        <point x="180" y="210"></point>
+        <point x="180" y="240"></point>
+        <point x="150" y="300"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="240"></point>
+        <point x="195" y="195"></point>
+        <point x="165" y="135"></point>
+      </polygon>
+      <circle x="85" y="132" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="130" y="147" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="192" y="85" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="85" y="40" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="177" y="40" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="177" y="132" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="70" y="85" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="130" y="25" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="96" y="51" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="113" y="68" marked="false" color="255" diameter="74" filled="true"></circle>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="189" y="233"></point>
+        <point x="219" y="188"></point>
+        <point x="249" y="173"></point>
+        <point x="279" y="188"></point>
+        <point x="234" y="218"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="180" y="255"></point>
+        <point x="150" y="210"></point>
+        <point x="105" y="210"></point>
+        <point x="75" y="240"></point>
+        <point x="135" y="240"></point>
+      </polygon>
+    </shape>
+    <shape name="house" rotatable="false" editableColorIndex="0">
+      <rectangle endX="255" startY="120" marked="true" color="-1920102913" endY="285" startX="45" filled="true"></rectangle>
+      <rectangle endX="180" startY="210" marked="false" color="255" endY="285" startX="120" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="15" y="120"></point>
+        <point x="150" y="15"></point>
+        <point x="285" y="120"></point>
+      </polygon>
+      <line endX="270" startY="120" marked="false" color="255" endY="120" startX="30"></line>
+    </shape>
+    <shape name="leaf" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="210"></point>
+        <point x="135" y="195"></point>
+        <point x="120" y="210"></point>
+        <point x="60" y="210"></point>
+        <point x="30" y="195"></point>
+        <point x="60" y="180"></point>
+        <point x="60" y="165"></point>
+        <point x="15" y="135"></point>
+        <point x="30" y="120"></point>
+        <point x="15" y="105"></point>
+        <point x="40" y="104"></point>
+        <point x="45" y="90"></point>
+        <point x="60" y="90"></point>
+        <point x="90" y="105"></point>
+        <point x="105" y="120"></point>
+        <point x="120" y="120"></point>
+        <point x="105" y="60"></point>
+        <point x="120" y="60"></point>
+        <point x="135" y="30"></point>
+        <point x="150" y="15"></point>
+        <point x="165" y="30"></point>
+        <point x="180" y="60"></point>
+        <point x="195" y="60"></point>
+        <point x="180" y="120"></point>
+        <point x="195" y="120"></point>
+        <point x="210" y="105"></point>
+        <point x="240" y="90"></point>
+        <point x="255" y="90"></point>
+        <point x="263" y="104"></point>
+        <point x="285" y="105"></point>
+        <point x="270" y="120"></point>
+        <point x="285" y="135"></point>
+        <point x="240" y="165"></point>
+        <point x="240" y="180"></point>
+        <point x="270" y="195"></point>
+        <point x="240" y="210"></point>
+        <point x="180" y="210"></point>
+        <point x="165" y="195"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="195"></point>
+        <point x="135" y="240"></point>
+        <point x="120" y="255"></point>
+        <point x="105" y="255"></point>
+        <point x="105" y="285"></point>
+        <point x="135" y="285"></point>
+        <point x="165" y="240"></point>
+        <point x="165" y="195"></point>
+      </polygon>
+    </shape>
+    <shape name="line" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="300" startX="150"></line>
+    </shape>
+    <shape name="line half" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="150" startX="150"></line>
+    </shape>
+    <shape name="pentagon" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="15"></point>
+        <point x="15" y="120"></point>
+        <point x="60" y="285"></point>
+        <point x="240" y="285"></point>
+        <point x="285" y="120"></point>
+      </polygon>
+    </shape>
+    <shape name="person" rotatable="false" editableColorIndex="0">
+      <circle x="110" y="5" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="120" y="195"></point>
+        <point x="90" y="285"></point>
+        <point x="105" y="300"></point>
+        <point x="135" y="300"></point>
+        <point x="150" y="225"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="300"></point>
+        <point x="210" y="285"></point>
+        <point x="180" y="195"></point>
+        <point x="195" y="90"></point>
+      </polygon>
+      <rectangle endX="172" startY="79" marked="true" color="-1920102913" endY="94" startX="127" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="195" y="90"></point>
+        <point x="240" y="150"></point>
+        <point x="225" y="180"></point>
+        <point x="165" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="60" y="150"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="105"></point>
+      </polygon>
+    </shape>
+    <shape name="plant" rotatable="false" editableColorIndex="0">
+      <rectangle endX="165" startY="90" marked="true" color="-1920102913" endY="300" startX="135" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="255"></point>
+        <point x="90" y="210"></point>
+        <point x="45" y="195"></point>
+        <point x="75" y="255"></point>
+        <point x="135" y="285"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="255"></point>
+        <point x="210" y="210"></point>
+        <point x="255" y="195"></point>
+        <point x="225" y="255"></point>
+        <point x="165" y="285"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="180"></point>
+        <point x="90" y="135"></point>
+        <point x="45" y="120"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="180"></point>
+        <point x="165" y="210"></point>
+        <point x="225" y="180"></point>
+        <point x="255" y="120"></point>
+        <point x="210" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="105"></point>
+        <point x="90" y="60"></point>
+        <point x="45" y="45"></point>
+        <point x="75" y="105"></point>
+        <point x="135" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="105"></point>
+        <point x="165" y="135"></point>
+        <point x="225" y="105"></point>
+        <point x="255" y="45"></point>
+        <point x="210" y="60"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="90"></point>
+        <point x="120" y="45"></point>
+        <point x="150" y="15"></point>
+        <point x="180" y="45"></point>
+        <point x="165" y="90"></point>
+      </polygon>
+    </shape>
+    <shape name="sheep" rotatable="false" editableColorIndex="15">
+      <circle x="203" y="65" marked="true" color="-1" diameter="88" filled="true"></circle>
+      <circle x="70" y="65" marked="true" color="-1" diameter="162" filled="true"></circle>
+      <circle x="150" y="105" marked="true" color="-1" diameter="120" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="218" y="120"></point>
+        <point x="240" y="165"></point>
+        <point x="255" y="165"></point>
+        <point x="278" y="120"></point>
+      </polygon>
+      <circle x="214" y="72" marked="false" color="-1920102913" diameter="67" filled="true"></circle>
+      <rectangle endX="179" startY="223" marked="true" color="-1" endY="298" startX="164" filled="true"></rectangle>
+      <polygon color="-1" filled="true" marked="true">
+        <point x="45" y="285"></point>
+        <point x="30" y="285"></point>
+        <point x="30" y="240"></point>
+        <point x="15" y="195"></point>
+        <point x="45" y="210"></point>
+      </polygon>
+      <circle x="3" y="83" marked="true" color="-1" diameter="150" filled="true"></circle>
+      <rectangle endX="80" startY="221" marked="true" color="-1" endY="296" startX="65" filled="true"></rectangle>
+      <polygon color="-1" filled="true" marked="true">
+        <point x="195" y="285"></point>
+        <point x="210" y="285"></point>
+        <point x="210" y="240"></point>
+        <point x="240" y="210"></point>
+        <point x="195" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="276" y="85"></point>
+        <point x="285" y="105"></point>
+        <point x="302" y="99"></point>
+        <point x="294" y="83"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="219" y="85"></point>
+        <point x="210" y="105"></point>
+        <point x="193" y="99"></point>
+        <point x="201" y="83"></point>
+      </polygon>
+    </shape>
+    <shape name="square" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+    </shape>
+    <shape name="square 2" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+      <rectangle endX="240" startY="60" marked="false" color="255" endY="240" startX="60" filled="true"></rectangle>
+    </shape>
+    <shape name="star" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="151" y="1"></point>
+        <point x="185" y="108"></point>
+        <point x="298" y="108"></point>
+        <point x="207" y="175"></point>
+        <point x="242" y="282"></point>
+        <point x="151" y="216"></point>
+        <point x="59" y="282"></point>
+        <point x="94" y="175"></point>
+        <point x="3" y="108"></point>
+        <point x="116" y="108"></point>
+      </polygon>
+    </shape>
+    <shape name="target" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+      <circle x="60" y="60" marked="true" color="-1920102913" diameter="180" filled="true"></circle>
+      <circle x="90" y="90" marked="false" color="255" diameter="120" filled="true"></circle>
+      <circle x="120" y="120" marked="true" color="-1920102913" diameter="60" filled="true"></circle>
+    </shape>
+    <shape name="tree" rotatable="false" editableColorIndex="0">
+      <circle x="118" y="3" marked="true" color="-1920102913" diameter="94" filled="true"></circle>
+      <rectangle endX="180" startY="195" marked="false" color="-1653716737" endY="300" startX="120" filled="true"></rectangle>
+      <circle x="65" y="21" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="116" y="41" marked="true" color="-1920102913" diameter="127" filled="true"></circle>
+      <circle x="45" y="90" marked="true" color="-1920102913" diameter="120" filled="true"></circle>
+      <circle x="104" y="74" marked="true" color="-1920102913" diameter="152" filled="true"></circle>
+    </shape>
+    <shape name="triangle" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="30"></point>
+        <point x="15" y="255"></point>
+        <point x="285" y="255"></point>
+      </polygon>
+    </shape>
+    <shape name="triangle 2" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="30"></point>
+        <point x="15" y="255"></point>
+        <point x="285" y="255"></point>
+      </polygon>
+      <polygon color="255" filled="true" marked="false">
+        <point x="151" y="99"></point>
+        <point x="225" y="223"></point>
+        <point x="75" y="224"></point>
+      </polygon>
+    </shape>
+    <shape name="truck" rotatable="false" editableColorIndex="0">
+      <rectangle endX="195" startY="45" marked="true" color="-1920102913" endY="187" startX="4" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="296" y="193"></point>
+        <point x="296" y="150"></point>
+        <point x="259" y="134"></point>
+        <point x="244" y="104"></point>
+        <point x="208" y="104"></point>
+        <point x="207" y="194"></point>
+      </polygon>
+      <rectangle endX="195" startY="60" marked="false" color="-1" endY="105" startX="195" filled="true"></rectangle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="238" y="112"></point>
+        <point x="252" y="141"></point>
+        <point x="219" y="141"></point>
+        <point x="218" y="112"></point>
+      </polygon>
+      <circle x="234" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <rectangle endX="214" startY="185" marked="true" color="-1920102913" endY="194" startX="181" filled="true"></rectangle>
+      <circle x="144" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <circle x="24" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <circle x="24" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+      <circle x="144" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+      <circle x="234" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+    </shape>
+    <shape name="turtle" rotatable="true" editableColorIndex="0">
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="215" y="204"></point>
+        <point x="240" y="233"></point>
+        <point x="246" y="254"></point>
+        <point x="228" y="266"></point>
+        <point x="215" y="252"></point>
+        <point x="193" y="210"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="195" y="90"></point>
+        <point x="225" y="75"></point>
+        <point x="245" y="75"></point>
+        <point x="260" y="89"></point>
+        <point x="269" y="108"></point>
+        <point x="261" y="124"></point>
+        <point x="240" y="105"></point>
+        <point x="225" y="105"></point>
+        <point x="210" y="105"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="105" y="90"></point>
+        <point x="75" y="75"></point>
+        <point x="55" y="75"></point>
+        <point x="40" y="89"></point>
+        <point x="31" y="108"></point>
+        <point x="39" y="124"></point>
+        <point x="60" y="105"></point>
+        <point x="75" y="105"></point>
+        <point x="90" y="105"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="132" y="85"></point>
+        <point x="134" y="64"></point>
+        <point x="107" y="51"></point>
+        <point x="108" y="17"></point>
+        <point x="150" y="2"></point>
+        <point x="192" y="18"></point>
+        <point x="192" y="52"></point>
+        <point x="169" y="65"></point>
+        <point x="172" y="87"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="85" y="204"></point>
+        <point x="60" y="233"></point>
+        <point x="54" y="254"></point>
+        <point x="72" y="266"></point>
+        <point x="85" y="252"></point>
+        <point x="107" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="119" y="75"></point>
+        <point x="179" y="75"></point>
+        <point x="209" y="101"></point>
+        <point x="224" y="135"></point>
+        <point x="220" y="225"></point>
+        <point x="175" y="261"></point>
+        <point x="128" y="261"></point>
+        <point x="81" y="224"></point>
+        <point x="74" y="135"></point>
+        <point x="88" y="99"></point>
+      </polygon>
+    </shape>
+    <shape name="wheel" rotatable="false" editableColorIndex="0">
+      <circle x="3" y="3" marked="true" color="-1920102913" diameter="294" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+      <line endX="150" startY="285" marked="true" color="-1920102913" endY="15" startX="150"></line>
+      <line endX="285" startY="150" marked="true" color="-1920102913" endY="150" startX="15"></line>
+      <circle x="120" y="120" marked="true" color="-1920102913" diameter="60" filled="true"></circle>
+      <line endX="79" startY="40" marked="true" color="-1920102913" endY="269" startX="216"></line>
+      <line endX="269" startY="84" marked="true" color="-1920102913" endY="221" startX="40"></line>
+      <line endX="269" startY="216" marked="true" color="-1920102913" endY="79" startX="40"></line>
+      <line endX="221" startY="40" marked="true" color="-1920102913" endY="269" startX="84"></line>
+    </shape>
+    <shape name="wolf" rotatable="false" editableColorIndex="0">
+      <polygon color="255" filled="true" marked="false">
+        <point x="253" y="133"></point>
+        <point x="245" y="131"></point>
+        <point x="245" y="133"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="2" y="194"></point>
+        <point x="13" y="197"></point>
+        <point x="30" y="191"></point>
+        <point x="38" y="193"></point>
+        <point x="38" y="205"></point>
+        <point x="20" y="226"></point>
+        <point x="20" y="257"></point>
+        <point x="27" y="265"></point>
+        <point x="38" y="266"></point>
+        <point x="40" y="260"></point>
+        <point x="31" y="253"></point>
+        <point x="31" y="230"></point>
+        <point x="60" y="206"></point>
+        <point x="68" y="198"></point>
+        <point x="75" y="209"></point>
+        <point x="66" y="228"></point>
+        <point x="65" y="243"></point>
+        <point x="82" y="261"></point>
+        <point x="84" y="268"></point>
+        <point x="100" y="267"></point>
+        <point x="103" y="261"></point>
+        <point x="77" y="239"></point>
+        <point x="79" y="231"></point>
+        <point x="100" y="207"></point>
+        <point x="98" y="196"></point>
+        <point x="119" y="201"></point>
+        <point x="143" y="202"></point>
+        <point x="160" y="195"></point>
+        <point x="166" y="210"></point>
+        <point x="172" y="213"></point>
+        <point x="173" y="238"></point>
+        <point x="167" y="251"></point>
+        <point x="160" y="248"></point>
+        <point x="154" y="265"></point>
+        <point x="169" y="264"></point>
+        <point x="178" y="247"></point>
+        <point x="186" y="240"></point>
+        <point x="198" y="260"></point>
+        <point x="200" y="271"></point>
+        <point x="217" y="271"></point>
+        <point x="219" y="262"></point>
+        <point x="207" y="258"></point>
+        <point x="195" y="230"></point>
+        <point x="192" y="198"></point>
+        <point x="210" y="184"></point>
+        <point x="227" y="164"></point>
+        <point x="242" y="144"></point>
+        <point x="259" y="145"></point>
+        <point x="284" y="151"></point>
+        <point x="277" y="141"></point>
+        <point x="293" y="140"></point>
+        <point x="299" y="134"></point>
+        <point x="297" y="127"></point>
+        <point x="273" y="119"></point>
+        <point x="270" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="-1" y="195"></point>
+        <point x="14" y="180"></point>
+        <point x="36" y="166"></point>
+        <point x="40" y="153"></point>
+        <point x="53" y="140"></point>
+        <point x="82" y="131"></point>
+        <point x="134" y="133"></point>
+        <point x="159" y="126"></point>
+        <point x="188" y="115"></point>
+        <point x="227" y="108"></point>
+        <point x="236" y="102"></point>
+        <point x="238" y="98"></point>
+        <point x="268" y="86"></point>
+        <point x="269" y="92"></point>
+        <point x="281" y="87"></point>
+        <point x="269" y="103"></point>
+        <point x="269" y="113"></point>
+      </polygon>
+    </shape>
+    <shape name="x" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="270" y="75"></point>
+        <point x="225" y="30"></point>
+        <point x="30" y="225"></point>
+        <point x="75" y="270"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="30" y="75"></point>
+        <point x="75" y="30"></point>
+        <point x="270" y="225"></point>
+        <point x="225" y="270"></point>
+      </polygon>
+    </shape>
+  </turtleShapes>
+  <linkShapes>
+    <shape name="default" curviness="0.0">
+      <lines>
+        <line x="-0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+        <line x="0.0" visible="true">
+          <dash value="1.0"></dash>
+          <dash value="0.0"></dash>
+        </line>
+        <line x="0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+      </lines>
+      <indicator>
+        <shape name="link direction" rotatable="true" editableColorIndex="0">
+          <line endX="90" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+          <line endX="210" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+        </shape>
+      </indicator>
+    </shape>
+  </linkShapes>
+  <previewCommands>setup repeat 75 [ go ]</previewCommands>
+  <experiments>
+    <experiment name="main_replication" repetitions="30" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="5000">
+      <setup>setup</setup>
+      <go>go</go>
+      <runMetricsCondition>ticks mod 50 = 0</runMetricsCondition>
+      <metrics>
+        <metric>ticks</metric>
+        <metric>count turtles</metric>
+        <metric>mean-faith</metric>
+        <metric>mean-natural-life-prob</metric>
+        <metric>mean-supernatural-life-prob</metric>
+        <metric>faith-stdev</metric>
+        <metric>faith-percentile-10</metric>
+        <metric>faith-percentile-90</metric>
+        <metric>mean-faith-energy-role</metric>
+        <metric>mean-faith-water-role</metric>
+        <metric>mean-faith-food-role</metric>
+        <metric>mean-faith-oxygen-role</metric>
+        <metric>mean-wealth-energy-role</metric>
+        <metric>mean-wealth-water-role</metric>
+        <metric>mean-wealth-food-role</metric>
+        <metric>mean-wealth-oxygen-role</metric>
+        <metric>mean-faith-upper-class</metric>
+        <metric>mean-faith-middle-class</metric>
+        <metric>mean-faith-lower-class</metric>
+        <metric>mean-life-theory2-prob</metric>
+        <metric>mean-life-theory3-prob</metric>
+        <metric>mean-life-theory4-prob</metric>
+        <metric>theory2-prob-stdev</metric>
+        <metric>theory4-prob-stdev</metric>
+        <metric>wealth-faith-correlation</metric>
+        <metric>trade-success-rate</metric>
+        <metric>successful-trades-this-tick</metric>
+        <metric>failed-trades-this-tick</metric>
+        <metric>births-this-tick</metric>
+        <metric>deaths-this-tick</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="max-population">
+          <value value="1000"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="snapshot_distribution" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="5000">
+      <setup>setup</setup>
+      <go>go</go>
+      <runMetricsCondition>ticks = 5000</runMetricsCondition>
+      <metrics>
+        <metric>ticks</metric>
+        <metric>all-faith-scores</metric>
+        <metric>oldest-energy-life-memory-flat</metric>
+        <metric>oldest-water-life-memory-flat</metric>
+        <metric>oldest-energy-energy-memory-flat</metric>
+      </metrics>
+    </experiment>
+    <experiment name="test_run" repetitions="2" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="300">
+      <setup>setup</setup>
+      <go>go</go>
+      <runMetricsCondition>ticks mod 50 = 0</runMetricsCondition>
+      <metrics>
+        <metric>ticks</metric>
+        <metric>count turtles</metric>
+        <metric>mean-faith</metric>
+        <metric>mean-natural-life-prob</metric>
+        <metric>mean-supernatural-life-prob</metric>
+        <metric>faith-stdev</metric>
+        <metric>faith-percentile-10</metric>
+        <metric>faith-percentile-90</metric>
+        <metric>mean-faith-energy-role</metric>
+        <metric>mean-faith-water-role</metric>
+        <metric>mean-faith-food-role</metric>
+        <metric>mean-faith-oxygen-role</metric>
+        <metric>mean-wealth-energy-role</metric>
+        <metric>mean-wealth-water-role</metric>
+        <metric>mean-wealth-food-role</metric>
+        <metric>mean-wealth-oxygen-role</metric>
+        <metric>mean-faith-upper-class</metric>
+        <metric>mean-faith-middle-class</metric>
+        <metric>mean-faith-lower-class</metric>
+        <metric>mean-life-theory2-prob</metric>
+        <metric>mean-life-theory3-prob</metric>
+        <metric>mean-life-theory4-prob</metric>
+        <metric>theory2-prob-stdev</metric>
+        <metric>theory4-prob-stdev</metric>
+        <metric>age-faith-correlation</metric>
+        <metric>wealth-faith-correlation</metric>
+        <metric>mean-age</metric>
+        <metric>count-juveniles</metric>
+        <metric>count-adults</metric>
+        <metric>births-this-tick</metric>
+        <metric>deaths-this-tick</metric>
+      </metrics>
+    </experiment>
+    <experiment name="Z" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="1000">
+      <setup>setup</setup>
+      <go>go</go>
+      <runMetricsCondition>ticks mod 50 = 0</runMetricsCondition>
+      <metrics>
+        <metric>ticks</metric>
+        <metric>count turtles</metric>
+        <metric>mean-faith</metric>
+        <metric>mean-faith-energy-role</metric>
+        <metric>mean-faith-water-role</metric>
+        <metric>mean-faith-food-role</metric>
+        <metric>mean-faith-oxygen-role</metric>
+        <metric>mean-wealth-energy-role</metric>
+        <metric>mean-wealth-water-role</metric>
+        <metric>mean-wealth-food-role</metric>
+        <metric>mean-wealth-oxygen-role</metric>
+        <metric>mean-life-theory2-prob</metric>
+        <metric>mean-life-theory3-prob</metric>
+        <metric>mean-life-theory4-prob</metric>
+        <metric>mean-deathfaith-energy</metric>
+        <metric>mean-deathfaith-water</metric>
+        <metric>mean-deathfaith-food</metric>
+        <metric>mean-deathfaith-oxygen</metric>
+        <metric>trade-success-rate</metric>
+        <metric>faith-stdev</metric>
+        <metric>faith-percentile-10</metric>
+        <metric>faith-percentile-90</metric>
+        <metric>wealth-faith-correlation</metric>
+        <metric>births-this-tick</metric>
+        <metric>deaths-this-tick</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="use-reproduction?">
+          <value value="false"></value>
+          <value value="true"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+  </experiments>
+</model>
