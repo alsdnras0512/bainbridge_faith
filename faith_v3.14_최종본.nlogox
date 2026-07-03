@@ -400,7 +400,7 @@ to go
 
   set total-vacancies vacancies-energy + vacancies-water + vacancies-food + vacancies-oxygen
 
-  update-monitors
+  if ticks mod 50 = 0 [ update-monitors ]
   tick
 end
 
@@ -1968,7 +1968,7 @@ end]]></code>
   </linkShapes>
   <previewCommands>setup repeat 75 [ go ]</previewCommands>
   <experiments>
-    <experiment name="main_replication" repetitions="30" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="5000">
+    <experiment name="main_replication" repetitions="30" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="1000">
       <setup>setup</setup>
       <go>go</go>
       <runMetricsCondition>ticks mod 50 = 0</runMetricsCondition>
@@ -1989,9 +1989,6 @@ end]]></code>
         <metric>mean-wealth-water-role</metric>
         <metric>mean-wealth-food-role</metric>
         <metric>mean-wealth-oxygen-role</metric>
-        <metric>mean-faith-upper-class</metric>
-        <metric>mean-faith-middle-class</metric>
-        <metric>mean-faith-lower-class</metric>
         <metric>mean-life-theory2-prob</metric>
         <metric>mean-life-theory3-prob</metric>
         <metric>mean-life-theory4-prob</metric>
@@ -2006,7 +2003,7 @@ end]]></code>
       </metrics>
       <constants>
         <enumeratedValueSet variable="max-population">
-          <value value="1000"></value>
+          <value value="5000"></value>
         </enumeratedValueSet>
       </constants>
     </experiment>
